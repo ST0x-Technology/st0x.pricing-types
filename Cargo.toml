@@ -1,0 +1,26 @@
+[package]
+name = "st0x-pricing-types"
+version = "0.2.0"
+edition = "2021"
+license = "CAL-1.0-Combined-Work-Exception"
+repository = "https://github.com/ST0x-Technology/st0x.pricing-types"
+description = "Shared wire types for the st0x.pricing service and its consumers (CBOR over WebSocket, Rain Floats as 32-byte byte strings)."
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std", "serde", "now"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+ciborium = "0.2"
+serde_json = "1"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
