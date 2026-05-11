@@ -4,53 +4,12 @@ on:
     branches: [master, main]
   pull_request:
 
-concurrency:
-  group: ${{ github.ref }}-ci
-  cancel-in-progress: ${{ github.ref != 'refs/heads/master' && github.ref != 'refs/heads/main' }}
-
+# Pure-Rust crate with no submodules / Foundry — delegate to rainix's
+# reusable workflows for the standard rust-shell fmt/clippy/test. The
+# workflows themselves pin `nix develop github:rainlanguage/rainix#rust-shell`
+# + the cache setup so we don't reimplement either here.
 jobs:
   test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: nixbuild/nix-quick-install-action@v30
-        with:
-          nix_conf: |
-            keep-env-derivations = true
-            keep-outputs = true
-
-      - uses: nix-community/cache-nix-action@v6
-        with:
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
-          restore-prefixes-first-match: nix-${{ runner.os }}-
-          gc-max-store-size-linux: 10G
-
-      - name: Test
-        run: nix develop -c cargo test --all-targets
-
+    uses: rainlanguage/rainix/.github/workflows/rainix-rs-test.yaml@master
   static:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: nixbuild/nix-quick-install-action@v30
-        with:
-          nix_conf: |
-            keep-env-derivations = true
-            keep-outputs = true
-
-      - uses: nix-community/cache-nix-action@v6
-        with:
-          primary-key: nix-${{ runner.os }}-${{ hashFiles('**/*.nix', '**/flake.lock') }}
-          restore-prefixes-first-match: nix-${{ runner.os }}-
-          gc-max-store-size-linux: 10G
-
-      - name: fmt + clippy
-        run: |
-          nix develop -c cargo fmt --all -- --check
-          nix develop -c cargo clippy --all-targets -- -D warnings
+    uses: rainlanguage/rainix/.github/workflows/rainix-rs-static.yaml@master
