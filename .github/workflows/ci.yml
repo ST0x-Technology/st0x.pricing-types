@@ -10,6 +10,6 @@ on:
 # + the cache setup so we don't reimplement either here.
 jobs:
   test:
-    uses: rainlanguage/rainix/.github/workflows/rainix-rs-test.yaml@master
+    uses: rainlanguage/rainix/.github/workflows/rainix-rs-test.yaml@main
   static:
-    uses: rainlanguage/rainix/.github/workflows/rainix-rs-static.yaml@master
+    uses: rainlanguage/rainix/.github/workflows/rainix-rs-static.yaml@main
