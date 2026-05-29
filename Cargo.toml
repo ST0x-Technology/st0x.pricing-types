@@ -1,6 +1,6 @@
 [package]
 name = "st0x-pricing-types"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "CAL-1.0-Combined-Work-Exception"
 repository = "https://github.com/ST0x-Technology/st0x.pricing-types"

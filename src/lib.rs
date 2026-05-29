@@ -19,8 +19,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+pub mod address;
 pub mod float;
 
+pub use address::WireAddress;
 pub use float::WireFloat;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -54,9 +56,18 @@ pub enum ErrorCode {
 pub type Symbol = String;
 
 /// A single bid/ask quote for an asset, signed off by the model.
+///
+/// `bid`/`ask` are denominated in the quote token: the price is for the
+/// pair `(base, quote)` on `chain_id`. `base` is the asset's on-chain
+/// token; `quote` is the settlement currency (e.g. USDC on Base). Carrying
+/// the canonical pair on the wire means consumers match by address instead
+/// of assuming which side is the quote token.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Quote {
     pub asset: Symbol,
+    pub chain_id: u64,
+    pub base: WireAddress,
+    pub quote: WireAddress,
     pub bid: WireFloat,
     pub ask: WireFloat,
     pub expiry_unix_ms: i64,
@@ -88,10 +99,16 @@ pub enum ClientFrame {
     Pong(PongFrame),
 }
 
+/// A live price push for one asset on one venue. `bid`/`ask` are for the
+/// pair `(base, quote)` on `chain_id` — see [`Quote`] for why the pair
+/// travels on the wire.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PriceFrame {
     pub asset: Symbol,
     pub venue: Venue,
+    pub chain_id: u64,
+    pub base: WireAddress,
+    pub quote: WireAddress,
     pub bid: WireFloat,
     pub ask: WireFloat,
     pub expiry_unix_ms: i64,
@@ -160,6 +177,9 @@ mod tests {
         let frame = ServerFrame::Price(PriceFrame {
             asset: "COIN".into(),
             venue: Venue::Bebop,
+            chain_id: 8453,
+            base: WireAddress::from_bytes([0x11; 20]),
+            quote: WireAddress::from_bytes([0x22; 20]),
             bid: WireFloat::from_bytes([0x42; 32]),
             ask: WireFloat::from_bytes([0x43; 32]),
             expiry_unix_ms: 1_715_000_030_000,
@@ -172,6 +192,9 @@ mod tests {
             ServerFrame::Price(p) => {
                 assert_eq!(p.asset, "COIN");
                 assert_eq!(p.venue, Venue::Bebop);
+                assert_eq!(p.chain_id, 8453);
+                assert_eq!(p.base, WireAddress::from_bytes([0x11; 20]));
+                assert_eq!(p.quote, WireAddress::from_bytes([0x22; 20]));
                 assert_eq!(p.bid, WireFloat::from_bytes([0x42; 32]));
                 assert_eq!(p.ask, WireFloat::from_bytes([0x43; 32]));
             }
@@ -197,13 +220,18 @@ mod tests {
     }
 
     #[test]
-    fn price_frame_wire_size_under_200_bytes() {
-        // Sanity check: a single price frame should fit comfortably
-        // under the JSON-baseline ~250 bytes. If this regresses sharply
-        // the wire probably grew a stringly-typed field.
+    fn price_frame_wire_size_bounded() {
+        // Sanity check against wire bloat. ~247 bytes with the canonical
+        // pair (chain_id + two 20-byte addresses + their CBOR map keys);
+        // the 320 ceiling leaves headroom for a long model_version (e.g.
+        // a git sha). A sharp regression past this means a stringly-typed
+        // field crept in.
         let frame = ServerFrame::Price(PriceFrame {
             asset: "COIN".into(),
             venue: Venue::Bebop,
+            chain_id: 8453,
+            base: WireAddress::from_bytes([0x11; 20]),
+            quote: WireAddress::from_bytes([0x22; 20]),
             bid: WireFloat::from_bytes([0x42; 32]),
             ask: WireFloat::from_bytes([0x43; 32]),
             expiry_unix_ms: 1_715_000_030_000,
@@ -212,7 +240,7 @@ mod tests {
         });
         let buf = cbor(&frame);
         assert!(
-            buf.len() < 200,
+            buf.len() < 320,
             "frame ballooned to {} bytes; cbor = {:02x?}",
             buf.len(),
             buf
