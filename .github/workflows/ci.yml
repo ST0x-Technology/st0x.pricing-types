@@ -3,7 +3,6 @@ on:
   push:
     branches: [master, main]
   pull_request:
-
 # Pure-Rust crate with no submodules / Foundry — delegate to rainix's
 # reusable workflows for the standard rust-shell fmt/clippy/test. The
 # workflows themselves pin `nix develop github:rainlanguage/rainix#rust-shell`
