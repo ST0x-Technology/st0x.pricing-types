@@ -55,21 +55,36 @@ pub enum ErrorCode {
 /// Symbol = uppercase Alpaca ticker (`COIN`, `TSLA`, ...).
 pub type Symbol = String;
 
-/// A single bid/ask quote for an asset, signed off by the model.
+/// A single directional-rate quote for an asset, signed off by the model.
 ///
-/// `bid`/`ask` are denominated in the quote token: the price is for the
-/// pair `(base, quote)` on `chain_id`. `base` is the asset's on-chain
-/// token; `quote` is the settlement currency (e.g. USDC on Base). Carrying
-/// the canonical pair on the wire means consumers match by address instead
-/// of assuming which side is the quote token.
+/// The model emits two independent rates — one per swap direction — both
+/// already incorporating whatever spread policy the model chose. Neither
+/// rate is "the price": each is the price the model would honour for an
+/// input of the named token going to an output of the other.
+///
+/// * `rate_base_to_quote`: amount of `quote` you receive per 1 unit of
+///   `base` input. (Whole-token units; the wire float is unit-free.)
+/// * `rate_quote_to_base`: amount of `base` you receive per 1 unit of
+///   `quote` input.
+///
+/// Consumers must NOT invert one to derive the other — that would treat
+/// the model's spread as if it were symmetric and discard the per-direction
+/// decision. The only legitimate `1/x` happens at protocol-adapter
+/// boundaries that require both rates in `quote-per-base` units (e.g.
+/// Bebop's level format), and that flip is unit conversion, not pricing.
+///
+/// `base` is the asset's on-chain token; `quote` is the settlement
+/// currency (e.g. USDC on Base). Carrying the canonical pair on the wire
+/// means consumers match by address instead of guessing which side is the
+/// quote token.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Quote {
     pub asset: Symbol,
     pub chain_id: u64,
     pub base: WireAddress,
     pub quote: WireAddress,
-    pub bid: WireFloat,
-    pub ask: WireFloat,
+    pub rate_base_to_quote: WireFloat,
+    pub rate_quote_to_base: WireFloat,
     pub expiry_unix_ms: i64,
     pub source_ts_unix_ms: i64,
 }
@@ -99,9 +114,10 @@ pub enum ClientFrame {
     Pong(PongFrame),
 }
 
-/// A live price push for one asset on one venue. `bid`/`ask` are for the
-/// pair `(base, quote)` on `chain_id` — see [`Quote`] for why the pair
-/// travels on the wire.
+/// A live price push for one asset on one venue. The two rates are per-
+/// direction for the pair `(base, quote)` on `chain_id` — see [`Quote`]
+/// for the semantics and why consumers must not invert one to derive the
+/// other.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PriceFrame {
     pub asset: Symbol,
@@ -109,8 +125,8 @@ pub struct PriceFrame {
     pub chain_id: u64,
     pub base: WireAddress,
     pub quote: WireAddress,
-    pub bid: WireFloat,
-    pub ask: WireFloat,
+    pub rate_base_to_quote: WireFloat,
+    pub rate_quote_to_base: WireFloat,
     pub expiry_unix_ms: i64,
     pub model_version: String,
     pub source_ts_unix_ms: i64,
@@ -180,8 +196,8 @@ mod tests {
             chain_id: 8453,
             base: WireAddress::from_bytes([0x11; 20]),
             quote: WireAddress::from_bytes([0x22; 20]),
-            bid: WireFloat::from_bytes([0x42; 32]),
-            ask: WireFloat::from_bytes([0x43; 32]),
+            rate_base_to_quote: WireFloat::from_bytes([0x42; 32]),
+            rate_quote_to_base: WireFloat::from_bytes([0x43; 32]),
             expiry_unix_ms: 1_715_000_030_000,
             model_version: "0.1.0".into(),
             source_ts_unix_ms: 1_714_999_970_000,
@@ -195,8 +211,8 @@ mod tests {
                 assert_eq!(p.chain_id, 8453);
                 assert_eq!(p.base, WireAddress::from_bytes([0x11; 20]));
                 assert_eq!(p.quote, WireAddress::from_bytes([0x22; 20]));
-                assert_eq!(p.bid, WireFloat::from_bytes([0x42; 32]));
-                assert_eq!(p.ask, WireFloat::from_bytes([0x43; 32]));
+                assert_eq!(p.rate_base_to_quote, WireFloat::from_bytes([0x42; 32]));
+                assert_eq!(p.rate_quote_to_base, WireFloat::from_bytes([0x43; 32]));
             }
             _ => panic!("wrong variant"),
         }
@@ -232,8 +248,8 @@ mod tests {
             chain_id: 8453,
             base: WireAddress::from_bytes([0x11; 20]),
             quote: WireAddress::from_bytes([0x22; 20]),
-            bid: WireFloat::from_bytes([0x42; 32]),
-            ask: WireFloat::from_bytes([0x43; 32]),
+            rate_base_to_quote: WireFloat::from_bytes([0x42; 32]),
+            rate_quote_to_base: WireFloat::from_bytes([0x43; 32]),
             expiry_unix_ms: 1_715_000_030_000,
             model_version: "0.1.0".into(),
             source_ts_unix_ms: 1_714_999_970_000,
