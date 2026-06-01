@@ -7,7 +7,11 @@ repository = "https://github.com/ST0x-Technology/st0x.pricing-types"
 description = "Shared wire types for the st0x.pricing service and its consumers (CBOR over WebSocket, Rain Floats as 32-byte byte strings)."
 
 [dependencies]
-chrono = { version = "0.4", default-features = false, features = ["std", "serde", "now"] }
+chrono = { version = "0.4", default-features = false, features = [
+  "std",
+  "serde",
+  "now",
+] }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 
