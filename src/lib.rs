@@ -104,6 +104,7 @@ pub enum ServerFrame {
     Price(PriceFrame),
     Error(ErrorFrame),
     Ping(PingFrame),
+    Halt(HaltFrame),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,6 +142,26 @@ pub struct ErrorFrame {
     pub last_ok_unix_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+}
+
+/// Explicit per-asset quote halt (RAI-702). Pushed when an asset's halt
+/// state changes, and once per subscribed asset on subscribe to convey the
+/// current state. Distinct from [`ErrorFrame`]/staleness: a halt is an
+/// intentional, ops- or NAV-step-triggered pause that consumers MUST honour
+/// by not quoting the asset (declining RFQs, skipping level publication)
+/// until a frame with `halted = false` arrives. The wrapped vault NAV can
+/// step on a dividend deposit; a quote signed just before the step and
+/// settled just after is stale, so the producer halts the asset around the
+/// step and resumes once repriced.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HaltFrame {
+    pub asset: Symbol,
+    pub chain_id: u64,
+    pub base: WireAddress,
+    pub quote: WireAddress,
+    pub halted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
