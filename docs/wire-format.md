@@ -47,13 +47,12 @@ decimal parse and no float anywhere. Consumers convert with
 `alloy::primitives::U256::from_be_bytes(wire.0)`.
 
 The one such field today is `nav_ratio` on `PriceFrame` / `Quote`: the exact
-`convertToAssets(1 share)` return of the wt vault backing `base` at the time
-the model priced the frame. Downstream venues assert exact equality against
-the vault on-chain at settlement, so any lossy representation would break the
-assertion. The all-zero value is the sentinel for "no ratio" (non-vault
-`base`, e.g. USDC) and means no settlement assertion applies; frames from
-producers that predate the field decode to the same sentinel via
-`#[serde(default)]`.
+`convertToAssets(1 share)` return of the wt vault backing `base` at the time the
+model priced the frame. Downstream venues assert exact equality against the
+vault on-chain at settlement, so any lossy representation would break the
+assertion. The all-zero value is the sentinel for "no ratio" (non-vault `base`,
+e.g. USDC) and means no settlement assertion applies; frames from producers that
+predate the field decode to the same sentinel via `#[serde(default)]`.
 
 ## WebSocket framing
 
