@@ -54,6 +54,13 @@ assertion. The all-zero value is the sentinel for "no ratio" (non-vault `base`,
 e.g. USDC) and means no settlement assertion applies; frames from producers that
 predate the field decode to the same sentinel via `#[serde(default)]`.
 
+The sentinel is trusted blind only by consumers that cannot know whether `base`
+is a vault token. A consumer that CAN know (a maker quoting a vault-sourced
+asset, an order deployed on a wt pair, a hook with a vault configured for the
+pool) must refuse a zero ratio outright rather than skip the assertion: a real
+vault NAV ratio is never zero, so zero-for-a-known-vault means something
+upstream is broken and forwarding it would let the fill settle unprotected.
+
 ## WebSocket framing
 
 URL: `wss://<host>/ws`. The upgrade request must carry

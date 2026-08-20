@@ -96,7 +96,9 @@ pub struct Quote {
     /// equality against the vault at settlement. Zero is the sentinel
     /// for "no ratio": `base` is not a vault token (e.g. USDC) and no
     /// settlement assertion applies. A real vault NAV ratio is never
-    /// zero.
+    /// zero, so a consumer that knows `base` IS a vault token must
+    /// treat zero as an upstream fault and refuse it rather than skip
+    /// the assertion.
     #[serde(default)]
     pub nav_ratio: WireU256,
 }
