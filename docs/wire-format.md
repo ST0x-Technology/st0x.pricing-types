@@ -39,6 +39,28 @@ Foundry to compile (its `sol!` macros load `DecimalFloat.json` at compile time),
 and consumers that just forward the bytes downstream shouldn't pay that cost. No
 f64 ever appears on the wire.
 
+## Raw uint256 values on the wire
+
+A raw EVM `uint256` (`WireU256`) travels as 32 big-endian bytes — the same CBOR
+byte-string shape as a Rain Float, so the value round-trips bit-for-bit with no
+decimal parse and no float anywhere. Consumers convert with
+`alloy::primitives::U256::from_be_bytes(wire.0)`.
+
+The one such field today is `nav_ratio` on `PriceFrame` / `Quote`: the exact
+`convertToAssets(1 share)` return of the wt vault backing `base` at the time the
+model priced the frame. Downstream venues assert exact equality against the
+vault on-chain at settlement, so any lossy representation would break the
+assertion. The all-zero value is the sentinel for "no ratio" (non-vault `base`,
+e.g. USDC) and means no settlement assertion applies; frames from producers that
+predate the field decode to the same sentinel via `#[serde(default)]`.
+
+The sentinel is trusted blind only by consumers that cannot know whether `base`
+is a vault token. A consumer that CAN know (a maker quoting a vault-sourced
+asset, an order deployed on a wt pair, a hook with a vault configured for the
+pool) must refuse a zero ratio outright rather than skip the assertion: a real
+vault NAV ratio is never zero, so zero-for-a-known-vault means something
+upstream is broken and forwarding it would let the fill settle unprotected.
+
 ## WebSocket framing
 
 URL: `wss://<host>/ws`. The upgrade request must carry

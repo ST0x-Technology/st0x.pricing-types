@@ -21,9 +21,11 @@ use std::fmt;
 
 pub mod address;
 pub mod float;
+pub mod u256;
 
 pub use address::WireAddress;
 pub use float::WireFloat;
+pub use u256::WireU256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -87,6 +89,18 @@ pub struct Quote {
     pub rate_quote_to_base: WireFloat,
     pub expiry_unix_ms: i64,
     pub source_ts_unix_ms: i64,
+    /// NAV ratio of the wt vault backing `base`, as the raw `uint256`
+    /// returned by the vault's `convertToAssets(1 share)` — the exact
+    /// on-chain value the model priced this quote against. Travels as
+    /// 32 big-endian bytes so downstream venues can assert bit-for-bit
+    /// equality against the vault at settlement. Zero is the sentinel
+    /// for "no ratio": `base` is not a vault token (e.g. USDC) and no
+    /// settlement assertion applies. A real vault NAV ratio is never
+    /// zero, so a consumer that knows `base` IS a vault token must
+    /// treat zero as an upstream fault and refuse it rather than skip
+    /// the assertion.
+    #[serde(default)]
+    pub nav_ratio: WireU256,
 }
 
 /// A coherent point-in-time snapshot of multiple assets for a venue.
@@ -131,6 +145,10 @@ pub struct PriceFrame {
     pub expiry_unix_ms: i64,
     pub model_version: String,
     pub source_ts_unix_ms: i64,
+    /// NAV ratio of the wt vault backing `base` — see [`Quote::nav_ratio`]
+    /// for the exact semantics and the zero sentinel.
+    #[serde(default)]
+    pub nav_ratio: WireU256,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -209,6 +227,18 @@ mod tests {
         ciborium::from_reader(buf).unwrap()
     }
 
+    /// A NAV ratio with a distinct value in every byte, so a truncated,
+    /// reordered, or lossily-converted round-trip cannot pass.
+    fn nav_ratio_pattern() -> WireU256 {
+        let mut bytes = [0u8; 32];
+        let mut v: u8 = 3;
+        for b in &mut bytes {
+            *b = v;
+            v = v.wrapping_add(41);
+        }
+        WireU256::from_bytes(bytes)
+    }
+
     #[test]
     fn server_frame_round_trip_price() {
         let frame = ServerFrame::Price(PriceFrame {
@@ -222,6 +252,7 @@ mod tests {
             expiry_unix_ms: 1_715_000_030_000,
             model_version: "0.1.0".into(),
             source_ts_unix_ms: 1_714_999_970_000,
+            nav_ratio: nav_ratio_pattern(),
         });
         let buf = cbor(&frame);
         let back: ServerFrame = from_cbor(&buf);
@@ -234,6 +265,60 @@ mod tests {
                 assert_eq!(p.quote, WireAddress::from_bytes([0x22; 20]));
                 assert_eq!(p.rate_base_to_quote, WireFloat::from_bytes([0x42; 32]));
                 assert_eq!(p.rate_quote_to_base, WireFloat::from_bytes([0x43; 32]));
+                assert_eq!(p.nav_ratio, nav_ratio_pattern());
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn quote_round_trip_preserves_nav_ratio_exactly() {
+        let quote = Quote {
+            asset: "wtCOIN".into(),
+            chain_id: 8453,
+            base: WireAddress::from_bytes([0x11; 20]),
+            quote: WireAddress::from_bytes([0x22; 20]),
+            rate_base_to_quote: WireFloat::from_bytes([0x42; 32]),
+            rate_quote_to_base: WireFloat::from_bytes([0x43; 32]),
+            expiry_unix_ms: 1_715_000_030_000,
+            source_ts_unix_ms: 1_714_999_970_000,
+            nav_ratio: nav_ratio_pattern(),
+        };
+        let back: Quote = from_cbor(&cbor(&quote));
+        assert_eq!(back.nav_ratio.0, nav_ratio_pattern().0);
+    }
+
+    #[test]
+    fn price_frame_without_nav_ratio_decodes_to_zero_sentinel() {
+        // A frame from a producer that predates `nav_ratio` has no such
+        // map key. Strip the key from a freshly-encoded frame to get that
+        // exact wire shape, then decode: the field must default to the
+        // zero sentinel ("no ratio / non-vault token").
+        let frame = ServerFrame::Price(PriceFrame {
+            asset: "COIN".into(),
+            venue: Venue::Bebop,
+            chain_id: 8453,
+            base: WireAddress::from_bytes([0x11; 20]),
+            quote: WireAddress::from_bytes([0x22; 20]),
+            rate_base_to_quote: WireFloat::from_bytes([0x42; 32]),
+            rate_quote_to_base: WireFloat::from_bytes([0x43; 32]),
+            expiry_unix_ms: 1_715_000_030_000,
+            model_version: "0.1.0".into(),
+            source_ts_unix_ms: 1_714_999_970_000,
+            nav_ratio: nav_ratio_pattern(),
+        });
+        let value: ciborium::Value = from_cbor(&cbor(&frame));
+        let ciborium::Value::Map(mut entries) = value else {
+            panic!("ServerFrame::Price must encode as a CBOR map");
+        };
+        let before = entries.len();
+        entries.retain(|(k, _)| k.as_text() != Some("nav_ratio"));
+        assert_eq!(entries.len(), before - 1, "nav_ratio key must be present");
+        let back: ServerFrame = from_cbor(&cbor(&ciborium::Value::Map(entries)));
+        match back {
+            ServerFrame::Price(p) => {
+                assert!(p.nav_ratio.is_zero());
+                assert_eq!(p.asset, "COIN");
             }
             _ => panic!("wrong variant"),
         }
@@ -258,10 +343,11 @@ mod tests {
 
     #[test]
     fn price_frame_wire_size_bounded() {
-        // Sanity check against wire bloat. ~247 bytes with the canonical
-        // pair (chain_id + two 20-byte addresses + their CBOR map keys);
-        // the 320 ceiling leaves headroom for a long model_version (e.g.
-        // a git sha). A sharp regression past this means a stringly-typed
+        // Sanity check against wire bloat. ~291 bytes with the canonical
+        // pair (chain_id + two 20-byte addresses) and the 34-byte
+        // `nav_ratio` byte string plus their CBOR map keys; the 360
+        // ceiling leaves headroom for a long model_version (e.g. a git
+        // sha). A sharp regression past this means a stringly-typed
         // field crept in.
         let frame = ServerFrame::Price(PriceFrame {
             asset: "COIN".into(),
@@ -274,10 +360,11 @@ mod tests {
             expiry_unix_ms: 1_715_000_030_000,
             model_version: "0.1.0".into(),
             source_ts_unix_ms: 1_714_999_970_000,
+            nav_ratio: nav_ratio_pattern(),
         });
         let buf = cbor(&frame);
         assert!(
-            buf.len() < 320,
+            buf.len() < 360,
             "frame ballooned to {} bytes; cbor = {:02x?}",
             buf.len(),
             buf
