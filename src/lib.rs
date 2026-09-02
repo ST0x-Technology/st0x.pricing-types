@@ -69,6 +69,14 @@ pub type Symbol = String;
 /// * `rate_quote_to_base`: amount of `base` you receive per 1 unit of
 ///   `quote` input.
 ///
+/// The `underlying_rate_*` pair mirrors these two but prices the vault's
+/// underlying ERC4626 asset (the offchain stock) instead of the vault
+/// token `base`. It is DEFINED as the served vault rate un-scaled by the
+/// NAV ratio, so a consumer deriving the vault price on-chain
+/// (`underlying * live convertToAssets(1 share)`) reproduces the SERVED
+/// vault rate — including any no-cross clamp the model applied — rather
+/// than trusting a signed vault rate. See the field docs below.
+///
 /// Consumers must NOT invert one to derive the other — that would treat
 /// the model's spread as if it were symmetric and discard the per-direction
 /// decision. The only legitimate `1/x` happens at protocol-adapter
@@ -101,6 +109,39 @@ pub struct Quote {
     /// the assertion.
     #[serde(default)]
     pub nav_ratio: WireU256,
+    /// Directional rate for the vault's underlying ERC4626 asset (the
+    /// offchain stock), `quote` per 1 unit of underlying. Same
+    /// directionality and spread policy as `rate_base_to_quote`. DEFINED
+    /// as the served (post-clamp) vault rate divided by the NAV *factor*
+    /// (`nav_ratio / 10^underlying_decimals`, NOT the raw `nav_ratio`
+    /// uint256), so that `underlying * convertToAssets(oneShare) / oneShare`
+    /// — equivalently the Rain Float `underlying * erc4626-convert-to-assets(
+    /// vault, 1)`, which normalizes internally — reproduces the SERVED
+    /// `rate_base_to_quote`, the exact rate the model published, clamps
+    /// included, and a consumer can derive the vault price atomically instead
+    /// of trusting the signed vault rate. See `docs/wire-format.md` for the
+    /// canonical formula. Crucially
+    /// this is the CLAMP-CONSISTENT underlying, not necessarily the raw
+    /// stock mark: when the model's no-cross clamp binds, this rate
+    /// reflects the clamped vault rate, so deriving from it cannot
+    /// reconstruct an unclamped (self-crossing) quote. When `base` is not
+    /// a vault token (`nav_ratio` zero) there is no separate underlying and
+    /// this equals `rate_base_to_quote`. (Decimal-float division is not a
+    /// bit-exact inverse of multiplication, so the derived vault rate
+    /// matches the served one to Float precision, not necessarily
+    /// bit-for-bit.) Frames from producers that predate the field decode
+    /// to the zero Float via `#[serde(default)]`; that all-zero sentinel
+    /// means "not carried", distinct from a real (always non-zero) stock
+    /// rate.
+    #[serde(default)]
+    pub underlying_rate_base_to_quote: WireFloat,
+    /// Directional rate for the vault's underlying ERC4626 asset, units of
+    /// underlying per 1 unit of `quote` — the reverse-direction counterpart
+    /// of [`Self::underlying_rate_base_to_quote`], mirroring
+    /// `rate_quote_to_base`. See that field for the vault-derivation and
+    /// zero-sentinel semantics.
+    #[serde(default)]
+    pub underlying_rate_quote_to_base: WireFloat,
 }
 
 /// A coherent point-in-time snapshot of multiple assets for a venue.
@@ -149,6 +190,15 @@ pub struct PriceFrame {
     /// for the exact semantics and the zero sentinel.
     #[serde(default)]
     pub nav_ratio: WireU256,
+    /// Underlying-asset directional rate — see
+    /// [`Quote::underlying_rate_base_to_quote`] for the vault-derivation
+    /// and zero-sentinel semantics.
+    #[serde(default)]
+    pub underlying_rate_base_to_quote: WireFloat,
+    /// Reverse-direction underlying rate — see
+    /// [`Quote::underlying_rate_quote_to_base`].
+    #[serde(default)]
+    pub underlying_rate_quote_to_base: WireFloat,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -253,6 +303,8 @@ mod tests {
             model_version: "0.1.0".into(),
             source_ts_unix_ms: 1_714_999_970_000,
             nav_ratio: nav_ratio_pattern(),
+            underlying_rate_base_to_quote: WireFloat::from_bytes([0x44; 32]),
+            underlying_rate_quote_to_base: WireFloat::from_bytes([0x45; 32]),
         });
         let buf = cbor(&frame);
         let back: ServerFrame = from_cbor(&buf);
@@ -266,6 +318,14 @@ mod tests {
                 assert_eq!(p.rate_base_to_quote, WireFloat::from_bytes([0x42; 32]));
                 assert_eq!(p.rate_quote_to_base, WireFloat::from_bytes([0x43; 32]));
                 assert_eq!(p.nav_ratio, nav_ratio_pattern());
+                assert_eq!(
+                    p.underlying_rate_base_to_quote,
+                    WireFloat::from_bytes([0x44; 32])
+                );
+                assert_eq!(
+                    p.underlying_rate_quote_to_base,
+                    WireFloat::from_bytes([0x45; 32])
+                );
             }
             _ => panic!("wrong variant"),
         }
@@ -283,9 +343,41 @@ mod tests {
             expiry_unix_ms: 1_715_000_030_000,
             source_ts_unix_ms: 1_714_999_970_000,
             nav_ratio: nav_ratio_pattern(),
+            underlying_rate_base_to_quote: WireFloat::from_bytes([0x44; 32]),
+            underlying_rate_quote_to_base: WireFloat::from_bytes([0x45; 32]),
         };
         let back: Quote = from_cbor(&cbor(&quote));
         assert_eq!(back.nav_ratio.0, nav_ratio_pattern().0);
+    }
+
+    #[test]
+    fn quote_round_trip_preserves_underlying_rates_exactly() {
+        // Distinct patterns per field so a swapped, truncated, or dropped
+        // underlying rate cannot pass. The underlying rates are the stock
+        // price the model priced against and downstream may derive the
+        // vault price from, so any lossy round-trip is a correctness bug.
+        let quote = Quote {
+            asset: "wtCOIN".into(),
+            chain_id: 8453,
+            base: WireAddress::from_bytes([0x11; 20]),
+            quote: WireAddress::from_bytes([0x22; 20]),
+            rate_base_to_quote: WireFloat::from_bytes([0x42; 32]),
+            rate_quote_to_base: WireFloat::from_bytes([0x43; 32]),
+            expiry_unix_ms: 1_715_000_030_000,
+            source_ts_unix_ms: 1_714_999_970_000,
+            nav_ratio: nav_ratio_pattern(),
+            underlying_rate_base_to_quote: WireFloat::from_bytes([0x44; 32]),
+            underlying_rate_quote_to_base: WireFloat::from_bytes([0x45; 32]),
+        };
+        let back: Quote = from_cbor(&cbor(&quote));
+        assert_eq!(
+            back.underlying_rate_base_to_quote,
+            WireFloat::from_bytes([0x44; 32])
+        );
+        assert_eq!(
+            back.underlying_rate_quote_to_base,
+            WireFloat::from_bytes([0x45; 32])
+        );
     }
 
     #[test]
@@ -306,6 +398,8 @@ mod tests {
             model_version: "0.1.0".into(),
             source_ts_unix_ms: 1_714_999_970_000,
             nav_ratio: nav_ratio_pattern(),
+            underlying_rate_base_to_quote: WireFloat::from_bytes([0x44; 32]),
+            underlying_rate_quote_to_base: WireFloat::from_bytes([0x45; 32]),
         });
         let value: ciborium::Value = from_cbor(&cbor(&frame));
         let ciborium::Value::Map(mut entries) = value else {
@@ -322,6 +416,98 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn price_frame_without_underlying_rates_decodes_to_zero_default() {
+        // A frame from a producer that predates the underlying rates has no
+        // such map keys. Strip both from a freshly-encoded frame to get that
+        // exact wire shape, then decode: each must default to the all-zero
+        // WireFloat ("not carried"), leaving the rest of the frame intact.
+        let frame = ServerFrame::Price(PriceFrame {
+            asset: "COIN".into(),
+            venue: Venue::Bebop,
+            chain_id: 8453,
+            base: WireAddress::from_bytes([0x11; 20]),
+            quote: WireAddress::from_bytes([0x22; 20]),
+            rate_base_to_quote: WireFloat::from_bytes([0x42; 32]),
+            rate_quote_to_base: WireFloat::from_bytes([0x43; 32]),
+            expiry_unix_ms: 1_715_000_030_000,
+            model_version: "0.1.0".into(),
+            source_ts_unix_ms: 1_714_999_970_000,
+            nav_ratio: nav_ratio_pattern(),
+            underlying_rate_base_to_quote: WireFloat::from_bytes([0x44; 32]),
+            underlying_rate_quote_to_base: WireFloat::from_bytes([0x45; 32]),
+        });
+        let value: ciborium::Value = from_cbor(&cbor(&frame));
+        let ciborium::Value::Map(mut entries) = value else {
+            panic!("ServerFrame::Price must encode as a CBOR map");
+        };
+        let before = entries.len();
+        entries.retain(|(k, _)| {
+            !matches!(
+                k.as_text(),
+                Some("underlying_rate_base_to_quote" | "underlying_rate_quote_to_base")
+            )
+        });
+        assert_eq!(
+            entries.len(),
+            before - 2,
+            "both underlying rate keys must be present"
+        );
+        let back: ServerFrame = from_cbor(&cbor(&ciborium::Value::Map(entries)));
+        match back {
+            ServerFrame::Price(p) => {
+                assert_eq!(p.underlying_rate_base_to_quote, WireFloat::default());
+                assert_eq!(p.underlying_rate_quote_to_base, WireFloat::default());
+                // The rest of the frame is untouched by the missing keys.
+                assert_eq!(p.rate_base_to_quote, WireFloat::from_bytes([0x42; 32]));
+                assert_eq!(p.nav_ratio, nav_ratio_pattern());
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn quote_without_underlying_rates_decodes_to_zero_default() {
+        // REST consumers (/snapshot) decode old producers through `Quote`, not
+        // `PriceFrame`, so its two `#[serde(default)]` attributes need their own
+        // regression pin. Strip both underlying keys from a freshly-encoded
+        // Quote and confirm each defaults to the all-zero WireFloat.
+        let quote = Quote {
+            asset: "COIN".into(),
+            chain_id: 8453,
+            base: WireAddress::from_bytes([0x11; 20]),
+            quote: WireAddress::from_bytes([0x22; 20]),
+            rate_base_to_quote: WireFloat::from_bytes([0x42; 32]),
+            rate_quote_to_base: WireFloat::from_bytes([0x43; 32]),
+            expiry_unix_ms: 1_715_000_030_000,
+            source_ts_unix_ms: 1_714_999_970_000,
+            nav_ratio: nav_ratio_pattern(),
+            underlying_rate_base_to_quote: WireFloat::from_bytes([0x44; 32]),
+            underlying_rate_quote_to_base: WireFloat::from_bytes([0x45; 32]),
+        };
+        let ciborium::Value::Map(mut entries) = from_cbor::<ciborium::Value>(&cbor(&quote)) else {
+            panic!("Quote must encode as a CBOR map");
+        };
+        let before = entries.len();
+        entries.retain(|(k, _)| {
+            !matches!(
+                k.as_text(),
+                Some("underlying_rate_base_to_quote" | "underlying_rate_quote_to_base")
+            )
+        });
+        assert_eq!(
+            entries.len(),
+            before - 2,
+            "both underlying rate keys must be present"
+        );
+        let back: Quote = from_cbor(&cbor(&ciborium::Value::Map(entries)));
+        assert_eq!(back.underlying_rate_base_to_quote, WireFloat::default());
+        assert_eq!(back.underlying_rate_quote_to_base, WireFloat::default());
+        // The rest of the quote is untouched by the missing keys.
+        assert_eq!(back.rate_base_to_quote, WireFloat::from_bytes([0x42; 32]));
+        assert_eq!(back.nav_ratio, nav_ratio_pattern());
     }
 
     #[test]
@@ -343,12 +529,12 @@ mod tests {
 
     #[test]
     fn price_frame_wire_size_bounded() {
-        // Sanity check against wire bloat. ~291 bytes with the canonical
-        // pair (chain_id + two 20-byte addresses) and the 34-byte
-        // `nav_ratio` byte string plus their CBOR map keys; the 360
-        // ceiling leaves headroom for a long model_version (e.g. a git
-        // sha). A sharp regression past this means a stringly-typed
-        // field crept in.
+        // Sanity check against wire bloat. ~420 bytes with the canonical
+        // pair (chain_id + two 20-byte addresses), the 34-byte `nav_ratio`
+        // byte string, and the two 34-byte `underlying_rate_*` byte strings
+        // plus their CBOR map keys; the 500 ceiling leaves headroom for a
+        // long model_version (e.g. a git sha). A sharp regression past this
+        // means a stringly-typed field crept in.
         let frame = ServerFrame::Price(PriceFrame {
             asset: "COIN".into(),
             venue: Venue::Bebop,
@@ -361,10 +547,12 @@ mod tests {
             model_version: "0.1.0".into(),
             source_ts_unix_ms: 1_714_999_970_000,
             nav_ratio: nav_ratio_pattern(),
+            underlying_rate_base_to_quote: WireFloat::from_bytes([0x44; 32]),
+            underlying_rate_quote_to_base: WireFloat::from_bytes([0x45; 32]),
         });
         let buf = cbor(&frame);
         assert!(
-            buf.len() < 360,
+            buf.len() < 500,
             "frame ballooned to {} bytes; cbor = {:02x?}",
             buf.len(),
             buf
