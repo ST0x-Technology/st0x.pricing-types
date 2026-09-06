@@ -61,6 +61,46 @@ pool) must refuse a zero ratio outright rather than skip the assertion: a real
 vault NAV ratio is never zero, so zero-for-a-known-vault means something
 upstream is broken and forwarding it would let the fill settle unprotected.
 
+## Trading session on the wire
+
+`PriceFrame` / `Quote` carry three optional session fields: `session` (a text
+tag), `session_start_unix_ms` and `session_end_unix_ms` (UTC milliseconds since
+the epoch). Together they say which trading session the producer priced the
+quote in and where that session's bounds are.
+
+The producer already owns market-hours truth — it clamps `expiry_unix_ms` to the
+session boundary — so `session_end_unix_ms` is that same boundary from that same
+source. Consumers that need a session (the oracle signs one into the on-chain
+context) previously re-derived it from their own independently-refreshed
+calendar. Two calendars means two refresh loops and a disagreement no test in
+either repo can catch; stating the session on the wire collapses that to one.
+
+The tag domain is `rth`, `premarket` and `afterhours` — the exact set the
+on-chain strategies accept. There is no `closed` tag: a closed market produces
+no quote at all, so the domain is closed by construction rather than by a lossy
+mapping.
+
+Consumer rules:
+
+- **Absent (`None`)** means the producer predates v0.7.0 and is saying nothing.
+  Fall back to your own calendar, and count the fallback — once the counter is
+  flat at zero the local calendar can be deleted.
+- **An unrecognised tag** must fail closed: refuse the quote rather than guess.
+  A tag this crate doesn't list is one an on-chain strategy would reject anyway.
+- **A `session_end_unix_ms` already in the past** is a fault, not a stale-but-
+  usable bound. Refuse the quote: the producer's view of the session outlived
+  the session, and anything signed off it reverts on-chain.
+
+All three are independently optional. A producer that knows the session and its
+end but not its start says exactly that; the fields are three `Option`s, not one
+all-or-nothing group.
+
+Wire compatibility runs both ways and is covered by tests. The fields use
+`skip_serializing_if = "Option::is_none"`, so a v0.7.0 producer with nothing to
+say emits bytes **byte-identical** to v0.6.0; and a v0.6.0 frame, which simply
+lacks the keys, decodes into the v0.7.0 types with all three `None`. Older
+consumers ignore the unknown map keys as usual.
+
 ## WebSocket framing
 
 URL: `wss://<host>/ws`. The upgrade request must carry
