@@ -91,9 +91,17 @@ Consumer rules:
   usable bound. Refuse the quote: the producer's view of the session outlived
   the session, and anything signed off it reverts on-chain.
 
-All three are independently optional. A producer that knows the session and its
-end but not its start says exactly that; the fields are three `Option`s, not one
-all-or-nothing group.
+The three fields are **all-or-nothing**: a producer emits the tag, the start and
+the end together, or none of them. They are three separate `Option`s only
+because the wire format cannot express one optional triple — not because a
+producer may pick and choose.
+
+A **partial statement** — a tag without both bounds, or bounds without a tag —
+is a fault. A consumer must refuse the quote rather than fill the gap from its
+own calendar: substituting the consumer's answer for a statement the producer
+declined to make is exactly the two-calendar divergence these fields exist to
+remove. `st0x-oracle-server` enforces this (`wire_session` matches
+`(Some, Some, Some)`; everything else is `WireSessionError::Partial`).
 
 Wire compatibility runs both ways and is covered by tests. The fields use
 `skip_serializing_if = "Option::is_none"`, so a v0.7.0 producer with nothing to

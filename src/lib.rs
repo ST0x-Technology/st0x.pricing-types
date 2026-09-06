@@ -125,8 +125,18 @@ pub struct Quote {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
     /// Start of [`Self::session`] in UTC milliseconds since the epoch —
-    /// the bound the oracle signs alongside the tag. `None` when the
-    /// producer knows the session but not its start.
+    /// the bound the oracle signs alongside the tag.
+    ///
+    /// The three session fields are **all-or-nothing**: a producer emits
+    /// the tag, the start and the end together, or none of them. They are
+    /// three separate `Option`s because the wire format has no way to
+    /// express one optional triple, not because a producer may pick and
+    /// choose. A partial statement — a tag without both bounds, or bounds
+    /// without a tag — is a fault, and a consumer must refuse the quote
+    /// rather than fill the gap from its own calendar: substituting the
+    /// consumer's answer for a statement the producer declined to make is
+    /// exactly the two-calendar divergence these fields exist to remove.
+    /// `st0x-oracle-server` enforces this.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_start_unix_ms: Option<i64>,
     /// End of [`Self::session`] in UTC milliseconds since the epoch: the
@@ -572,11 +582,19 @@ mod tests {
     }
 
     #[test]
-    fn session_fields_are_independently_optional() {
-        // A producer that knows the session tag and its end but not its
-        // start (pricing's `SessionContext` carries `ends_at` only) must
-        // be able to say exactly that. Three separate `Option`s, not one
-        // all-or-nothing group.
+    fn a_partial_session_statement_survives_the_wire_for_the_consumer_to_refuse() {
+        // The three fields are all-or-nothing *as a contract*, and no
+        // conforming producer emits a partial statement. This pins the
+        // encoding underneath that contract: the fields are three
+        // separate `Option`s, so a partial statement round-trips
+        // faithfully instead of being silently completed or dropped.
+        //
+        // That matters because the consumer is what enforces the
+        // contract — `st0x-oracle-server`'s `wire_session` matches
+        // `(Some, Some, Some)` and refuses anything else. It can only
+        // refuse a partial statement it can actually observe, so the
+        // wire must carry one through unchanged rather than paper over
+        // it here.
         let frame = PriceFrame {
             session_start_unix_ms: None,
             ..v07_price_frame_with_session()
