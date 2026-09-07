@@ -88,6 +88,13 @@ pub struct Quote {
     pub rate_base_to_quote: WireFloat,
     pub rate_quote_to_base: WireFloat,
     pub expiry_unix_ms: i64,
+    /// Exclusive settlement deadline in UTC milliseconds since the Unix epoch.
+    /// Producers must supply a positive `Some` for executable session quotes.
+    /// Consumers must refuse execution for `None`, nonpositive values, or
+    /// `now_ms >= deadline`. Quote freshness remains independently required;
+    /// this deadline must not replace or refresh the source timestamp.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_deadline_unix_ms: Option<i64>,
     pub source_ts_unix_ms: i64,
     /// NAV ratio of the wt vault backing `base`, as the raw `uint256`
     /// returned by the vault's `convertToAssets(1 share)` — the exact
@@ -143,6 +150,9 @@ pub struct PriceFrame {
     pub rate_base_to_quote: WireFloat,
     pub rate_quote_to_base: WireFloat,
     pub expiry_unix_ms: i64,
+    /// Exclusive UTC settlement deadline; see [`Quote::execution_deadline_unix_ms`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_deadline_unix_ms: Option<i64>,
     pub model_version: String,
     pub source_ts_unix_ms: i64,
     /// NAV ratio of the wt vault backing `base` — see [`Quote::nav_ratio`]
@@ -250,15 +260,29 @@ mod tests {
             rate_base_to_quote: WireFloat::from_bytes([0x42; 32]),
             rate_quote_to_base: WireFloat::from_bytes([0x43; 32]),
             expiry_unix_ms: 1_715_000_030_000,
+            execution_deadline_unix_ms: Some(1_715_003_000_000),
             model_version: "0.1.0".into(),
             source_ts_unix_ms: 1_714_999_970_000,
             nav_ratio: nav_ratio_pattern(),
         });
         let buf = cbor(&frame);
+        let ciborium::Value::Map(mut legacy_entries) = from_cbor(&buf) else {
+            panic!("price frame must encode as map");
+        };
+        legacy_entries.retain(|(key, _)| key.as_text() != Some("execution_deadline_unix_ms"));
+        let legacy: ServerFrame = from_cbor(&cbor(&ciborium::Value::Map(legacy_entries)));
+        assert!(matches!(
+            legacy,
+            ServerFrame::Price(PriceFrame {
+                execution_deadline_unix_ms: None,
+                ..
+            })
+        ));
         let back: ServerFrame = from_cbor(&buf);
         match back {
             ServerFrame::Price(p) => {
                 assert_eq!(p.asset, "COIN");
+                assert_eq!(p.execution_deadline_unix_ms, Some(1_715_003_000_000));
                 assert_eq!(p.venue, Venue::Bebop);
                 assert_eq!(p.chain_id, 8453);
                 assert_eq!(p.base, WireAddress::from_bytes([0x11; 20]));
@@ -281,11 +305,22 @@ mod tests {
             rate_base_to_quote: WireFloat::from_bytes([0x42; 32]),
             rate_quote_to_base: WireFloat::from_bytes([0x43; 32]),
             expiry_unix_ms: 1_715_000_030_000,
+            execution_deadline_unix_ms: Some(1_715_003_000_000),
             source_ts_unix_ms: 1_714_999_970_000,
             nav_ratio: nav_ratio_pattern(),
         };
         let back: Quote = from_cbor(&cbor(&quote));
         assert_eq!(back.nav_ratio.0, nav_ratio_pattern().0);
+        assert_eq!(
+            back.execution_deadline_unix_ms,
+            quote.execution_deadline_unix_ms
+        );
+        let ciborium::Value::Map(mut entries) = from_cbor(&cbor(&quote)) else {
+            panic!("quote must encode as map");
+        };
+        entries.retain(|(key, _)| key.as_text() != Some("execution_deadline_unix_ms"));
+        let legacy: Quote = from_cbor(&cbor(&ciborium::Value::Map(entries)));
+        assert_eq!(legacy.execution_deadline_unix_ms, None);
     }
 
     #[test]
@@ -303,6 +338,7 @@ mod tests {
             rate_base_to_quote: WireFloat::from_bytes([0x42; 32]),
             rate_quote_to_base: WireFloat::from_bytes([0x43; 32]),
             expiry_unix_ms: 1_715_000_030_000,
+            execution_deadline_unix_ms: None,
             model_version: "0.1.0".into(),
             source_ts_unix_ms: 1_714_999_970_000,
             nav_ratio: nav_ratio_pattern(),
@@ -343,12 +379,8 @@ mod tests {
 
     #[test]
     fn price_frame_wire_size_bounded() {
-        // Sanity check against wire bloat. ~291 bytes with the canonical
-        // pair (chain_id + two 20-byte addresses) and the 34-byte
-        // `nav_ratio` byte string plus their CBOR map keys; the 360
-        // ceiling leaves headroom for a long model_version (e.g. a git
-        // sha). A sharp regression past this means a stringly-typed
-        // field crept in.
+        // The 420-byte budget includes a populated deadline and a full git SHA,
+        // with limited headroom for metadata growth.
         let frame = ServerFrame::Price(PriceFrame {
             asset: "COIN".into(),
             venue: Venue::Bebop,
@@ -358,13 +390,14 @@ mod tests {
             rate_base_to_quote: WireFloat::from_bytes([0x42; 32]),
             rate_quote_to_base: WireFloat::from_bytes([0x43; 32]),
             expiry_unix_ms: 1_715_000_030_000,
-            model_version: "0.1.0".into(),
+            execution_deadline_unix_ms: Some(1_715_003_000_000),
+            model_version: "0123456789abcdef0123456789abcdef01234567".into(),
             source_ts_unix_ms: 1_714_999_970_000,
             nav_ratio: nav_ratio_pattern(),
         });
         let buf = cbor(&frame);
         assert!(
-            buf.len() < 360,
+            buf.len() < 420,
             "frame ballooned to {} bytes; cbor = {:02x?}",
             buf.len(),
             buf
