@@ -61,6 +61,46 @@ pool) must refuse a zero ratio outright rather than skip the assertion: a real
 vault NAV ratio is never zero, so zero-for-a-known-vault means something
 upstream is broken and forwarding it would let the fill settle unprotected.
 
+## Underlying (stock) rates
+
+`PriceFrame` / `Quote` also carry `underlying_rate_base_to_quote` and
+`underlying_rate_quote_to_base`: the directional rates for the vault's
+underlying ERC4626 asset — the offchain stock. They are DEFINED as the served
+vault rates un-scaled by the NAV **factor** — the normalized
+`nav_ratio / 10^underlying_decimals`, NOT the raw `nav_ratio` uint256 (which is
+`convertToAssets(oneShare)` in the vault's decimals, e.g. ~1.025e18). So a
+consumer that wants the vault price derives it atomically from the underlying
+and the vault's own conversion:
+
+```
+vault_price = underlying * convertToAssets(oneShare) / oneShare
+              (oneShare = 10^share_decimals)
+```
+
+— equivalently, in Rainlang, `underlying * erc4626-convert-to-assets(vault, 1)`,
+where the Rain Float word already returns the normalized assets-per-share (so no
+`/ oneShare` is needed there). Either way this reproduces the SERVED vault rate,
+instead of trusting the signed vault rate — which sidesteps the exact-match NAV
+gate as a DoS surface. They mirror `rate_base_to_quote` / `rate_quote_to_base`
+in directionality and spread policy; the only difference is the scaling.
+
+Because the underlying is derived from the SERVED vault rate, it is
+clamp-consistent, not necessarily the raw stock mark: when the model's no-cross
+guard clamps the vault rate, the underlying reflects the clamped rate, so a
+consumer deriving `underlying * convertToAssets` reproduces the clamped quote
+and cannot reconstruct an unclamped, self-crossing one. Decimal-float division
+is not a bit-exact inverse of multiplication, so this derivation reproduces the
+served vault rate to Float precision (last digit), not necessarily bit-for-bit;
+the underlying is the definition and the served rate is the target.
+
+Underlying rates, the vault rates, and `nav_ratio` all come from a single
+upstream mark read, so they are mutually consistent for that observation. When
+`base` is not a vault token (`nav_ratio` zero) there is no separate underlying
+and `underlying_rate_base_to_quote == rate_base_to_quote` (likewise for the
+reverse direction). Frames from producers that predate the fields decode to the
+all-zero Float via `#[serde(default)]`; a real stock rate is never all-zero, so
+that value reads as "not carried".
+
 ## WebSocket framing
 
 URL: `wss://<host>/ws`. The upgrade request must carry
