@@ -10,6 +10,7 @@
     {
       flake-utils,
       rainix,
+      ...
     }:
     flake-utils.lib.eachDefaultSystem (system: {
       # Pure-Rust crate — no Foundry / submodules / sol-shell needed.

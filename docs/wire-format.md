@@ -101,6 +101,22 @@ reverse direction). Frames from producers that predate the fields decode to the
 all-zero Float via `#[serde(default)]`; a real stock rate is never all-zero, so
 that value reads as "not carried".
 
+## Settlement deadline
+
+`Quote` and `PriceFrame` carry `execution_deadline_unix_ms`, an exclusive
+settlement deadline in UTC milliseconds since the Unix epoch. Producers must
+provide a positive value for executable session quotes. Consumers must refuse
+execution when the value is absent, `null`, nonpositive, or reached: execution
+requires `now_ms < execution_deadline_unix_ms`. An absent or `null` field
+decodes to `None`, which means unknown, not unlimited execution permission.
+Serializing `None` omits the field.
+
+The deadline and quote freshness are independent constraints. Both must hold.
+The deadline may precede `expiry_unix_ms`; a later deadline never extends that
+freshness expiry. Consumers must preserve both bounds when caching, signing, and
+forwarding quotes. They must not replace or refresh `source_ts_unix_ms` with the
+deadline or the time they received the quote.
+
 ## WebSocket framing
 
 URL: `wss://<host>/ws`. The upgrade request must carry
