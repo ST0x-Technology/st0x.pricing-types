@@ -21,6 +21,7 @@ use std::fmt;
 
 pub mod address;
 pub mod float;
+pub mod trading_state;
 pub mod u256;
 
 pub use address::WireAddress;
