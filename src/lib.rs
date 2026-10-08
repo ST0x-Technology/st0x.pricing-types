@@ -58,13 +58,8 @@ pub enum ErrorCode {
 /// Symbol = uppercase Alpaca ticker (`COIN`, `TSLA`, ...).
 pub type Symbol = String;
 
-/// The trading session of the asset's listing exchange that a quote was
-/// priced in. Unrelated to [`Venue`], the consumer a frame is for.
-///
-/// US exchanges use `Premarket`, `Rth` and `Afterhours`, and `Closed`
-/// outside them. Exchanges without extended hours (the EU exchanges) only
-/// use `Rth` for continuous trading and `Closed`. Adding a variant fails decode of the whole frame in
-/// consumers built against an older version of this crate.
+/// Trading session on the asset's listing exchange. Exchanges without
+/// extended hours use only `Rth` and `Closed`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionTag {
@@ -85,17 +80,9 @@ impl SessionTag {
     }
 }
 
-/// The session a quote was priced in, with that session's bounds on the
-/// asset's listing exchange, in UTC milliseconds since the Unix epoch.
-///
-/// For an open session the bounds are the current sub-window: for example
-/// `Premarket` ends where `Rth` starts. For `Closed`, `start_unix_ms` is the
-/// previous session close and `end_unix_ms` the next session open.
-///
-/// Every session satisfies `start_unix_ms <= source_ts_unix_ms <=
-/// end_unix_ms`, and an open session ends after `source_ts_unix_ms`. A
-/// `Closed` bound the producer cannot know is set to `source_ts_unix_ms`, so a
-/// bound equal to it means unknown, not a session boundary.
+/// Session a quote was priced in and its bounds, in UTC ms.
+/// `start_unix_ms <= source_ts_unix_ms <= end_unix_ms`. For `Closed`, a
+/// bound equal to `source_ts_unix_ms` is unknown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuoteSession {
     pub tag: SessionTag,
@@ -195,10 +182,7 @@ pub struct Quote {
     /// zero-sentinel semantics.
     #[serde(default)]
     pub underlying_rate_quote_to_base: WireFloat,
-    /// Session the quote was priced in, on the asset's listing exchange. Producers
-    /// always send it. `None` means the frame came from a producer that
-    /// predates the field; a consumer that signs or gates on the session must
-    /// refuse such a frame rather than derive a session elsewhere.
+    /// Session the quote was priced in. Signers must refuse `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<QuoteSession>,
 }
@@ -212,8 +196,6 @@ pub struct Snapshot {
     pub prices: Vec<Quote>,
 }
 
-// Boxing `PriceFrame` would change every consumer's pattern match for a
-// value that is built once per frame and moved straight into the encoder.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -695,8 +677,7 @@ mod tests {
         assert_eq!(back.session, None);
     }
 
-    /// The frame and quote shapes of v0.8.0, the last release without a
-    /// session. Consumers still on it must keep decoding frames that carry one.
+    /// v0.8.0 shapes, without `session`.
     mod v0_8 {
         use crate::{Symbol, Venue, WireAddress, WireFloat, WireU256};
         use serde::Deserialize;
