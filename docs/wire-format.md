@@ -117,6 +117,40 @@ freshness expiry. Consumers must preserve both bounds when caching, signing, and
 forwarding quotes. They must not replace or refresh `source_ts_unix_ms` with the
 deadline or the time they received the quote.
 
+## Session
+
+`Quote` and `PriceFrame` carry `session`, the trading session of the asset's
+listing exchange (for example Nasdaq or Euronext Paris) that the quote was
+priced in. It is unrelated to `venue`, the consumer the frame is for.
+
+| Field           | Type   | Meaning                                       |
+| --------------- | ------ | --------------------------------------------- |
+| `tag`           | string | `premarket`, `rth`, `afterhours` or `closed`  |
+| `start_unix_ms` | int    | Start of that session, UTC ms since the epoch |
+| `end_unix_ms`   | int    | End of that session, UTC ms since the epoch   |
+
+US exchanges use `premarket`, `rth` and `afterhours`, and `closed` outside them.
+Exchanges without extended hours (the EU exchanges) only use `rth`, for
+continuous trading, and `closed`. For an open session the bounds are the current
+sub-window, so `premarket` ends where `rth` starts. For `closed`,
+`start_unix_ms` is the previous session close and `end_unix_ms` the next session
+open. The session is classified at `source_ts_unix_ms`, the instant the price
+was read.
+
+Every session satisfies `start_unix_ms <= source_ts_unix_ms <= end_unix_ms`, and
+an open session ends after `source_ts_unix_ms`. A consumer that signs the
+session must refuse one that does not. A `closed` bound the producer cannot know
+is set to `source_ts_unix_ms`: a bound equal to `source_ts_unix_ms` means
+unknown, not a session boundary.
+
+Producers always send it. An absent field decodes to `None` and means the frame
+came from a producer that predates it. A consumer that signs or gates on the
+session must refuse such a frame instead of deriving a session from another
+calendar. Consumers that do not read the session ignore the key.
+
+A new tag fails decode of the whole frame in consumers built against an older
+version of this crate, so adding one is a lockstep change.
+
 ## WebSocket framing
 
 URL: `wss://<host>/ws`. The upgrade request must carry
