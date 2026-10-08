@@ -140,8 +140,7 @@ was read.
 Every session satisfies `start_unix_ms <= source_ts_unix_ms <= end_unix_ms`, and
 an open session ends after `source_ts_unix_ms`. A consumer that signs the
 session must refuse one that does not. A `closed` bound the producer cannot know
-is set to `source_ts_unix_ms`: a bound equal to `source_ts_unix_ms` means
-unknown, not a session boundary.
+is set to `source_ts_unix_ms`.
 
 Producers always send it. An absent field decodes to `None` and means the frame
 came from a producer that predates it. A consumer that signs or gates on the

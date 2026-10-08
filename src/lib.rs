@@ -81,8 +81,7 @@ impl SessionTag {
 }
 
 /// Session a quote was priced in and its bounds, in UTC ms.
-/// `start_unix_ms <= source_ts_unix_ms <= end_unix_ms`. For `Closed`, a
-/// bound equal to `source_ts_unix_ms` is unknown.
+/// `start_unix_ms <= source_ts_unix_ms <= end_unix_ms`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuoteSession {
     pub tag: SessionTag,
