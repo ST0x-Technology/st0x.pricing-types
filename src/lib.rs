@@ -81,7 +81,12 @@ impl SessionTag {
 }
 
 /// Session a quote was priced in and its bounds, in UTC ms.
-/// `start_unix_ms <= source_ts_unix_ms <= end_unix_ms`.
+///
+/// With `source_ts_unix_ms` of the enclosing `Quote` or `PriceFrame`,
+/// `start_unix_ms <= source_ts_unix_ms <= end_unix_ms`, and an open session
+/// has `source_ts_unix_ms < end_unix_ms`. Decoding does not check this; a
+/// consumer that signs the session must refuse one that breaks it. See the
+/// Session section of `docs/wire-format.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuoteSession {
     pub tag: SessionTag,
