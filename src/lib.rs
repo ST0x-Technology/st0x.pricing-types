@@ -58,6 +58,42 @@ pub enum ErrorCode {
 /// Symbol = uppercase Alpaca ticker (`COIN`, `TSLA`, ...).
 pub type Symbol = String;
 
+/// Trading session on the asset's listing exchange. Exchanges without
+/// extended hours use only `Rth` and `Closed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionTag {
+    Premarket,
+    Rth,
+    Afterhours,
+    Closed,
+}
+
+impl SessionTag {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Premarket => "premarket",
+            Self::Rth => "rth",
+            Self::Afterhours => "afterhours",
+            Self::Closed => "closed",
+        }
+    }
+}
+
+/// Session a quote was priced in and its bounds, in UTC ms.
+///
+/// With `source_ts_unix_ms` of the enclosing `Quote` or `PriceFrame`,
+/// `start_unix_ms <= source_ts_unix_ms <= end_unix_ms`, and an open session
+/// has `source_ts_unix_ms < end_unix_ms`. Decoding does not check this; a
+/// consumer that signs the session must refuse one that breaks it. See the
+/// Session section of `docs/wire-format.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuoteSession {
+    pub tag: SessionTag,
+    pub start_unix_ms: i64,
+    pub end_unix_ms: i64,
+}
+
 /// A single directional-rate quote for an asset, signed off by the model.
 ///
 /// The model emits two independent rates — one per swap direction — both
@@ -150,6 +186,9 @@ pub struct Quote {
     /// zero-sentinel semantics.
     #[serde(default)]
     pub underlying_rate_quote_to_base: WireFloat,
+    /// Session the quote was priced in. Signers must refuse `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<QuoteSession>,
 }
 
 /// A coherent point-in-time snapshot of multiple assets for a venue.
@@ -161,6 +200,7 @@ pub struct Snapshot {
     pub prices: Vec<Quote>,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerFrame {
@@ -210,6 +250,9 @@ pub struct PriceFrame {
     /// [`Quote::underlying_rate_quote_to_base`].
     #[serde(default)]
     pub underlying_rate_quote_to_base: WireFloat,
+    /// Session the quote was priced in; see [`Quote::session`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<QuoteSession>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -300,6 +343,14 @@ mod tests {
         WireU256::from_bytes(bytes)
     }
 
+    fn rth_session() -> QuoteSession {
+        QuoteSession {
+            tag: SessionTag::Rth,
+            start_unix_ms: 1_714_973_400_000,
+            end_unix_ms: 1_715_003_000_000,
+        }
+    }
+
     #[test]
     fn server_frame_round_trip_price() {
         let frame = ServerFrame::Price(PriceFrame {
@@ -317,6 +368,7 @@ mod tests {
             nav_ratio: nav_ratio_pattern(),
             underlying_rate_base_to_quote: WireFloat::from_bytes([0x44; 32]),
             underlying_rate_quote_to_base: WireFloat::from_bytes([0x45; 32]),
+            session: Some(rth_session()),
         });
         let buf = cbor(&frame);
         let ciborium::Value::Map(mut legacy_entries) = from_cbor(&buf) else {
@@ -335,6 +387,7 @@ mod tests {
         match back {
             ServerFrame::Price(p) => {
                 assert_eq!(p.asset, "COIN");
+                assert_eq!(p.session, Some(rth_session()));
                 assert_eq!(p.execution_deadline_unix_ms, Some(1_715_003_000_000));
                 assert_eq!(p.venue, Venue::Bebop);
                 assert_eq!(p.chain_id, 8453);
@@ -371,9 +424,11 @@ mod tests {
             nav_ratio: nav_ratio_pattern(),
             underlying_rate_base_to_quote: WireFloat::from_bytes([0x44; 32]),
             underlying_rate_quote_to_base: WireFloat::from_bytes([0x45; 32]),
+            session: Some(rth_session()),
         };
         let back: Quote = from_cbor(&cbor(&quote));
         assert_eq!(back.nav_ratio.0, nav_ratio_pattern().0);
+        assert_eq!(back.session, Some(rth_session()));
         assert_eq!(
             back.execution_deadline_unix_ms,
             quote.execution_deadline_unix_ms
@@ -404,6 +459,7 @@ mod tests {
             nav_ratio: nav_ratio_pattern(),
             underlying_rate_base_to_quote: WireFloat::from_bytes([0x44; 32]),
             underlying_rate_quote_to_base: WireFloat::from_bytes([0x45; 32]),
+            session: None,
             execution_deadline_unix_ms: None,
         };
         let back: Quote = from_cbor(&cbor(&quote));
@@ -438,6 +494,7 @@ mod tests {
             nav_ratio: nav_ratio_pattern(),
             underlying_rate_base_to_quote: WireFloat::from_bytes([0x44; 32]),
             underlying_rate_quote_to_base: WireFloat::from_bytes([0x45; 32]),
+            session: None,
         });
         let value: ciborium::Value = from_cbor(&cbor(&frame));
         let ciborium::Value::Map(mut entries) = value else {
@@ -476,6 +533,7 @@ mod tests {
             nav_ratio: nav_ratio_pattern(),
             underlying_rate_base_to_quote: WireFloat::from_bytes([0x44; 32]),
             underlying_rate_quote_to_base: WireFloat::from_bytes([0x45; 32]),
+            session: None,
             execution_deadline_unix_ms: None,
         });
         let value: ciborium::Value = from_cbor(&cbor(&frame));
@@ -525,6 +583,7 @@ mod tests {
             nav_ratio: nav_ratio_pattern(),
             underlying_rate_base_to_quote: WireFloat::from_bytes([0x44; 32]),
             underlying_rate_quote_to_base: WireFloat::from_bytes([0x45; 32]),
+            session: None,
             execution_deadline_unix_ms: None,
         };
         let ciborium::Value::Map(mut entries) = from_cbor::<ciborium::Value>(&cbor(&quote)) else {
@@ -550,6 +609,216 @@ mod tests {
         assert_eq!(back.nav_ratio, nav_ratio_pattern());
     }
 
+    fn price_frame(session: Option<QuoteSession>) -> PriceFrame {
+        PriceFrame {
+            asset: "COIN".into(),
+            venue: Venue::Raindex,
+            chain_id: 8453,
+            base: WireAddress::from_bytes([0x11; 20]),
+            quote: WireAddress::from_bytes([0x22; 20]),
+            rate_base_to_quote: WireFloat::from_bytes([0x42; 32]),
+            rate_quote_to_base: WireFloat::from_bytes([0x43; 32]),
+            expiry_unix_ms: 1_715_000_030_000,
+            execution_deadline_unix_ms: Some(1_715_003_000_000),
+            model_version: "0.1.0".into(),
+            source_ts_unix_ms: 1_714_999_970_000,
+            nav_ratio: nav_ratio_pattern(),
+            underlying_rate_base_to_quote: WireFloat::from_bytes([0x44; 32]),
+            underlying_rate_quote_to_base: WireFloat::from_bytes([0x45; 32]),
+            session,
+        }
+    }
+
+    #[test]
+    fn session_tags_use_their_wire_names() {
+        for tag in [
+            SessionTag::Premarket,
+            SessionTag::Rth,
+            SessionTag::Afterhours,
+            SessionTag::Closed,
+        ] {
+            assert_eq!(
+                serde_json::to_value(tag).unwrap(),
+                serde_json::Value::String(tag.as_str().into())
+            );
+            let back: SessionTag = from_cbor(&cbor(&tag));
+            assert_eq!(back, tag);
+        }
+    }
+
+    #[test]
+    fn price_frame_session_round_trips_in_json() {
+        let frame = ServerFrame::Price(price_frame(Some(QuoteSession {
+            tag: SessionTag::Closed,
+            start_unix_ms: 1_714_996_800_000,
+            end_unix_ms: 1_715_068_800_000,
+        })));
+        let json = serde_json::to_value(&frame).unwrap();
+        assert_eq!(
+            json["session"],
+            serde_json::json!({
+                "tag": "closed",
+                "start_unix_ms": 1_714_996_800_000_i64,
+                "end_unix_ms": 1_715_068_800_000_i64,
+            })
+        );
+        let ServerFrame::Price(back) = serde_json::from_value(json).unwrap() else {
+            panic!("wrong variant");
+        };
+        assert_eq!(back.session.map(|s| s.tag), Some(SessionTag::Closed));
+    }
+
+    #[test]
+    fn price_frame_without_session_decodes_to_none_and_omits_the_key() {
+        let buf = cbor(&ServerFrame::Price(price_frame(None)));
+        let ciborium::Value::Map(entries) = from_cbor(&buf) else {
+            panic!("ServerFrame::Price must encode as a CBOR map");
+        };
+        assert!(entries.iter().all(|(k, _)| k.as_text() != Some("session")));
+        let ServerFrame::Price(back) = from_cbor(&buf) else {
+            panic!("wrong variant");
+        };
+        assert_eq!(back.session, None);
+    }
+
+    /// v0.8.0 shapes, without `session`.
+    mod v0_8 {
+        use crate::{Symbol, Venue, WireAddress, WireFloat, WireU256};
+        use serde::Deserialize;
+
+        #[derive(Deserialize)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        pub enum ServerFrame {
+            Price(PriceFrame),
+        }
+
+        #[derive(Deserialize)]
+        pub struct PriceFrame {
+            pub asset: Symbol,
+            pub venue: Venue,
+            pub chain_id: u64,
+            pub base: WireAddress,
+            pub quote: WireAddress,
+            pub rate_base_to_quote: WireFloat,
+            pub rate_quote_to_base: WireFloat,
+            pub expiry_unix_ms: i64,
+            #[serde(default)]
+            pub execution_deadline_unix_ms: Option<i64>,
+            pub model_version: String,
+            pub source_ts_unix_ms: i64,
+            #[serde(default)]
+            pub nav_ratio: WireU256,
+            #[serde(default)]
+            pub underlying_rate_base_to_quote: WireFloat,
+            #[serde(default)]
+            pub underlying_rate_quote_to_base: WireFloat,
+        }
+
+        #[derive(Deserialize)]
+        pub struct SnapshotQuote {
+            pub asset: Symbol,
+            pub chain_id: u64,
+            pub base: WireAddress,
+            pub quote: WireAddress,
+            pub rate_base_to_quote: WireFloat,
+            pub rate_quote_to_base: WireFloat,
+            pub expiry_unix_ms: i64,
+            #[serde(default)]
+            pub execution_deadline_unix_ms: Option<i64>,
+            pub source_ts_unix_ms: i64,
+            #[serde(default)]
+            pub nav_ratio: WireU256,
+            #[serde(default)]
+            pub underlying_rate_base_to_quote: WireFloat,
+            #[serde(default)]
+            pub underlying_rate_quote_to_base: WireFloat,
+        }
+    }
+
+    #[test]
+    fn v0_8_consumers_decode_frames_that_carry_a_session() {
+        let frame = ServerFrame::Price(price_frame(Some(rth_session())));
+        let v0_8::ServerFrame::Price(old) = from_cbor(&cbor(&frame));
+        assert_eq!(old.asset, "COIN");
+        assert_eq!(old.venue, Venue::Raindex);
+        assert_eq!(old.chain_id, 8453);
+        assert_eq!(old.base, WireAddress::from_bytes([0x11; 20]));
+        assert_eq!(old.quote, WireAddress::from_bytes([0x22; 20]));
+        assert_eq!(old.rate_base_to_quote, WireFloat::from_bytes([0x42; 32]));
+        assert_eq!(old.rate_quote_to_base, WireFloat::from_bytes([0x43; 32]));
+        assert_eq!(old.expiry_unix_ms, 1_715_000_030_000);
+        assert_eq!(old.execution_deadline_unix_ms, Some(1_715_003_000_000));
+        assert_eq!(old.model_version, "0.1.0");
+        assert_eq!(old.source_ts_unix_ms, 1_714_999_970_000);
+        assert_eq!(old.nav_ratio, nav_ratio_pattern());
+        assert_eq!(
+            old.underlying_rate_base_to_quote,
+            WireFloat::from_bytes([0x44; 32])
+        );
+        assert_eq!(
+            old.underlying_rate_quote_to_base,
+            WireFloat::from_bytes([0x45; 32])
+        );
+
+        let v0_8::ServerFrame::Price(old) =
+            serde_json::from_value(serde_json::to_value(&frame).unwrap()).unwrap();
+        assert_eq!(old.source_ts_unix_ms, 1_714_999_970_000);
+    }
+
+    #[test]
+    fn v0_8_consumers_decode_snapshot_quotes_that_carry_a_session() {
+        let frame = price_frame(Some(rth_session()));
+        let snapshot = Snapshot {
+            snapshot_ts_unix_ms: 1_715_000_000_000,
+            venue: Venue::Raindex,
+            model_version: "0.1.0".into(),
+            prices: vec![Quote {
+                asset: frame.asset,
+                chain_id: frame.chain_id,
+                base: frame.base,
+                quote: frame.quote,
+                rate_base_to_quote: frame.rate_base_to_quote,
+                rate_quote_to_base: frame.rate_quote_to_base,
+                expiry_unix_ms: frame.expiry_unix_ms,
+                execution_deadline_unix_ms: frame.execution_deadline_unix_ms,
+                source_ts_unix_ms: frame.source_ts_unix_ms,
+                nav_ratio: frame.nav_ratio,
+                underlying_rate_base_to_quote: frame.underlying_rate_base_to_quote,
+                underlying_rate_quote_to_base: frame.underlying_rate_quote_to_base,
+                session: frame.session,
+            }],
+        };
+        let buf = cbor(&snapshot);
+        let ciborium::Value::Map(entries) = from_cbor(&buf) else {
+            panic!("Snapshot must encode as a CBOR map");
+        };
+        let prices = entries
+            .into_iter()
+            .find(|(k, _)| k.as_text() == Some("prices"))
+            .map(|(_, v)| v)
+            .expect("prices key");
+        let old: Vec<v0_8::SnapshotQuote> = from_cbor(&cbor(&prices));
+        assert_eq!(old.len(), 1);
+        assert_eq!(old[0].asset, "COIN");
+        assert_eq!(old[0].chain_id, 8453);
+        assert_eq!(old[0].base, WireAddress::from_bytes([0x11; 20]));
+        assert_eq!(old[0].quote, WireAddress::from_bytes([0x22; 20]));
+        assert_eq!(old[0].rate_base_to_quote, WireFloat::from_bytes([0x42; 32]));
+        assert_eq!(old[0].rate_quote_to_base, WireFloat::from_bytes([0x43; 32]));
+        assert_eq!(old[0].expiry_unix_ms, 1_715_000_030_000);
+        assert_eq!(old[0].execution_deadline_unix_ms, Some(1_715_003_000_000));
+        assert_eq!(old[0].source_ts_unix_ms, 1_714_999_970_000);
+        assert_eq!(old[0].nav_ratio, nav_ratio_pattern());
+        assert_eq!(
+            old[0].underlying_rate_base_to_quote,
+            WireFloat::from_bytes([0x44; 32])
+        );
+        assert_eq!(
+            old[0].underlying_rate_quote_to_base,
+            WireFloat::from_bytes([0x45; 32])
+        );
+    }
+
     #[test]
     fn client_frame_round_trip_subscribe() {
         let frame = ClientFrame::Subscribe(SubscribeFrame {
@@ -569,10 +838,11 @@ mod tests {
 
     #[test]
     fn price_frame_wire_size_bounded() {
-        // The canonical CBOR frame is 524 bytes: two 20-byte addresses, four
+        // The canonical CBOR frame is 585 bytes: two 20-byte addresses, four
         // 32-byte rates, a 32-byte NAV ratio, integer timestamps,
-        // a populated execution deadline, a 40-character model SHA, and map keys.
-        // The 550-byte ceiling leaves 26 bytes of headroom. A breach can mean
+        // a populated execution deadline, a 40-character model SHA, a session
+        // with two integer bounds, and map keys.
+        // The 610-byte ceiling leaves 25 bytes of headroom. A breach can mean
         // a binary address or float became stringly typed; check the encoding
         // before increasing the budget.
         let frame = ServerFrame::Price(PriceFrame {
@@ -590,10 +860,11 @@ mod tests {
             nav_ratio: nav_ratio_pattern(),
             underlying_rate_base_to_quote: WireFloat::from_bytes([0x44; 32]),
             underlying_rate_quote_to_base: WireFloat::from_bytes([0x45; 32]),
+            session: Some(rth_session()),
         });
         let buf = cbor(&frame);
         assert!(
-            buf.len() < 550,
+            buf.len() < 610,
             "frame ballooned to {} bytes; cbor = {:02x?}",
             buf.len(),
             buf
